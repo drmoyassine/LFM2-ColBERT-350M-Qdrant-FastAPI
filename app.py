@@ -26,8 +26,12 @@ model = models.ColBERT(model_name_or_path=MODEL_NAME)
 client = QdrantClient(host=QDRANT_HOST, port=QDRANT_PORT)
 client.recreate_collection(
     collection_name=COLLECTION_NAME,
-    vector_size=VECTOR_SIZE,
-    distance="Cosine"
+    vectors_config={
+        "default": {
+            "size": VECTOR_SIZE,
+            "distance": "Cosine"
+        }
+    }
 )
 
 class IndexRequest(BaseModel):

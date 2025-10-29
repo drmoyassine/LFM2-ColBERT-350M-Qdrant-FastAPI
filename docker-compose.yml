@@ -6,6 +6,7 @@ services:
       - "6333:6333"
     volumes:
       - qdrant_data:/qdrant/storage
+
   app:
     build: .
     ports:
@@ -14,6 +15,7 @@ services:
       - qdrant
     env_file:
       - .env
+
   nginx:
     image: nginx:alpine
     ports:
@@ -25,5 +27,6 @@ services:
     depends_on:
       - app
     entrypoint: ["/docker-entrypoint.sh"]
+
 volumes:
   qdrant_data:
