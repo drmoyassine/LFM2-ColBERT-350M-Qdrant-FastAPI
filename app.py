@@ -5,6 +5,7 @@ from pydantic import BaseModel
 from fastapi.security import APIKeyHeader
 from pylate import models
 from qdrant_client import QdrantClient
+from qdrant_client.http.models import CollectionStatus
 
 app = FastAPI(title="LFM2-ColBERT-350M + Qdrant API")
 
@@ -24,15 +25,31 @@ VECTOR_SIZE = int(os.environ.get("VECTOR_SIZE", 128))
 # Load model and qdrant client at startup
 model = models.ColBERT(model_name_or_path=MODEL_NAME)
 client = QdrantClient(host=QDRANT_HOST, port=QDRANT_PORT)
-client.recreate_collection(
-    collection_name=COLLECTION_NAME,
-    vectors_config={
-        "default": {
-            "size": VECTOR_SIZE,
-            "distance": "Cosine"
-        }
-    }
-)
+
+# Robust collection creation logic
+try:
+    status = client.get_collection(COLLECTION_NAME)
+    if status.status in (CollectionStatus.GREEN, CollectionStatus.YELLOW):
+        print(f"Collection {COLLECTION_NAME} already exists, skipping creation.")
+    else:
+        print(f"Collection {COLLECTION_NAME} found with unhealthy status, recreating...")
+        client.delete_collection(COLLECTION_NAME)
+        client.create_collection(
+            collection_name=COLLECTION_NAME,
+            vectors_config={"default": {"size": VECTOR_SIZE, "distance": "Cosine"}}
+        )
+except Exception as e:
+    if "does not exist" in str(e):
+        print(f"Collection {COLLECTION_NAME} does not exist, creating...")
+        client.create_collection(
+            collection_name=COLLECTION_NAME,
+            vectors_config={"default": {"size": VECTOR_SIZE, "distance": "Cosine"}}
+        )
+    elif "already exists" in str(e):
+        print(f"Collection {COLLECTION_NAME} already exists, skipping creation.")
+    else:
+        print(f"Error initializing Qdrant collection: {e}")
+        raise
 
 class IndexRequest(BaseModel):
     doc_id: str
