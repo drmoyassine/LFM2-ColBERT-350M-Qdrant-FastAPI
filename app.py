@@ -1,6 +1,6 @@
 import os
-from typing import List
-from fastapi import FastAPI, HTTPException, Depends, Security
+from typing import List, Optional
+from fastapi import FastAPI, HTTPException, Depends, Security, Header
 from pydantic import BaseModel
 from fastapi.security import APIKeyHeader
 from pylate import models
@@ -9,6 +9,7 @@ from qdrant_client.http.models import CollectionStatus
 
 app = FastAPI(title="LFM2-ColBERT-350M + Qdrant API")
 
+# Your existing API key header for internal endpoints
 API_KEY = os.environ.get("API_KEY", "change_this_key")
 api_key_header = APIKeyHeader(name="X-API-Key")
 
@@ -16,15 +17,26 @@ def verify_api_key(key: str = Security(api_key_header)):
     if key != API_KEY:
         raise HTTPException(status_code=403, detail="Invalid or missing API key")
 
+
+# OpenAI Bearer token for /v1 endpoints
+OPENAI_BEARER_TOKEN = os.environ.get("OPENAI_BEARER_TOKEN", "change_this_openai_token")
+
+def verify_bearer(token: str):
+    if token != OPENAI_BEARER_TOKEN:
+        raise HTTPException(status_code=401, detail="Unauthorized")
+
+# Environment variables
 MODEL_NAME = os.environ.get("MODEL_NAME", "LiquidAI/LFM2-ColBERT-350M")
 QDRANT_HOST = os.environ.get("QDRANT_HOST", "qdrant")
 QDRANT_PORT = int(os.environ.get("QDRANT_PORT", 6333))
 COLLECTION_NAME = os.environ.get("COLLECTION_NAME", "colbert_docs")
 VECTOR_SIZE = int(os.environ.get("VECTOR_SIZE", 128))
 
-# Load model and qdrant client at startup
+
+# Load model and Qdrant client
 model = models.ColBERT(model_name_or_path=MODEL_NAME)
 client = QdrantClient(host=QDRANT_HOST, port=QDRANT_PORT)
+
 
 # Robust collection creation logic
 try:
@@ -51,6 +63,8 @@ except Exception as e:
         print(f"Error initializing Qdrant collection: {e}")
         raise
 
+
+# Existing models for internal API
 class IndexRequest(BaseModel):
     doc_id: str
     text: str
@@ -66,6 +80,27 @@ class BatchQueryRequest(BaseModel):
     queries: List[str]
     top_k: int = 3
 
+
+# OpenAI-style embedding request and response schemas
+class OpenAIEmbeddingRequest(BaseModel):
+    model: str
+    input: Optional[str] = None
+    inputs: Optional[List[str]] = None
+
+class EmbeddingData(BaseModel):
+    object: str = "embedding"
+    embedding: List[float]
+    index: int
+
+class OpenAIEmbeddingResponse(BaseModel):
+    object: str = "list"
+    data: List[EmbeddingData]
+    model: str
+    usage: dict = {}
+
+
+# Internal endpoints
+
 @app.get("/health")
 async def health():
     try:
@@ -80,6 +115,7 @@ async def health():
         details = {"qdrant_status": "unreachable", "error": str(e)}
     return {"status": status, "details": details}
 
+
 @app.post("/index/")
 async def add_document(req: IndexRequest, _=Depends(verify_api_key)):
     emb = model.encode([req.text], is_query=False)[0]
@@ -89,6 +125,7 @@ async def add_document(req: IndexRequest, _=Depends(verify_api_key)):
         points=[{"id": req.doc_id, "vector": pooled_emb.tolist(), "payload": {"text": req.text}}]
     )
     return {"message": "Indexed", "id": req.doc_id}
+
 
 @app.post("/search/")
 async def search_documents(req: QueryRequest, _=Depends(verify_api_key)):
@@ -105,6 +142,7 @@ async def search_documents(req: QueryRequest, _=Depends(verify_api_key)):
         results.append({"query": query, "results": found})
     return results
 
+
 @app.post("/batch_index/")
 async def batch_index(req: BatchIndexRequest, _=Depends(verify_api_key)):
     ids = [d.doc_id for d in req.docs]
@@ -116,6 +154,7 @@ async def batch_index(req: BatchIndexRequest, _=Depends(verify_api_key)):
     ]
     client.upsert(collection_name=COLLECTION_NAME, points=points)
     return {"success": True, "count": len(ids)}
+
 
 @app.post("/batch_search/")
 async def batch_search(req: BatchQueryRequest, _=Depends(verify_api_key)):
@@ -130,3 +169,30 @@ async def batch_search(req: BatchQueryRequest, _=Depends(verify_api_key)):
         found = [{"id": h.id, "score": h.score, "payload": h.payload} for h in hits]
         results.append({"query": query, "results": found})
     return results
+
+
+# OpenAI-compatible embedding endpoint
+
+@app.post("/v1/embeddings", response_model=OpenAIEmbeddingResponse)
+async def openai_embedding(
+    req: OpenAIEmbeddingRequest,
+    authorization: Optional[str] = Header(None)
+):
+    if not authorization or not authorization.startswith("Bearer "):
+        raise HTTPException(status_code=401, detail="Unauthorized")
+    token = authorization.split(" ")[1]
+    verify_bearer(token)
+
+    texts = []
+    if req.input:  # single input string
+        texts = [req.input]
+    elif req.inputs:  # list of input strings
+        texts = req.inputs
+    else:
+        raise HTTPException(status_code=400, detail="No input texts found.")
+
+    embeddings = [model.encode([text], is_query=False)[0].mean(axis=0).tolist() for text in texts]
+
+    data = [EmbeddingData(embedding=emb, index=i) for i, emb in enumerate(embeddings)]
+
+    return OpenAIEmbeddingResponse(data=data, model=req.model, usage={})
