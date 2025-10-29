@@ -1,0 +1,29 @@
+version: "3.8"
+services:
+  qdrant:
+    image: qdrant/qdrant:v1.9.1
+    ports:
+      - "6333:6333"
+    volumes:
+      - qdrant_data:/qdrant/storage
+  app:
+    build: .
+    ports:
+      - "8000:8000"
+    depends_on:
+      - qdrant
+    env_file:
+      - .env
+  nginx:
+    image: nginx:alpine
+    ports:
+      - "443:443"
+    volumes:
+      - ./nginx.conf.template:/etc/nginx/conf.d/nginx.conf.template
+      - ./docker-entrypoint.sh:/docker-entrypoint.sh
+      - /etc/letsencrypt:/etc/letsencrypt:ro
+    depends_on:
+      - app
+    entrypoint: ["/docker-entrypoint.sh"]
+volumes:
+  qdrant_data:
